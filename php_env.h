@@ -21,33 +21,13 @@
 #ifndef PHP_ENV_H
 #define PHP_ENV_H
 
-extern zend_module_entry env_module_entry;
-#define phpext_env_ptr &env_module_entry
-
 #define PHP_ENV_VERSION "0.1.0"
 
-#ifdef PHP_WIN32
-#	define PHP_ENV_API __declspec(dllexport)
-#elif defined(__GNUC__) && __GNUC__ >= 4
-#	define PHP_ENV_API __attribute__ ((visibility("default")))
-#else
-#	define PHP_ENV_API
-#endif
 
-#ifdef ZTS
-#include "TSRM.h"
-#endif
-
-ZEND_BEGIN_MODULE_GLOBALS(env)
+typedef struct _zend_env_globals {
 	char *file;
 	int parse_err;
-ZEND_END_MODULE_GLOBALS(env)
-
-#ifdef ZTS
-#define ENV_G(v) TSRMG(env_globals_id, zend_env_globals *, v)
-#else
-#define ENV_G(v) (env_globals.v)
-#endif
+} zend_env_globals;
 
 #endif	/* PHP_ENV_H */
 

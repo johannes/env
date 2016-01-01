@@ -20,6 +20,22 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "php_env.h"
+
+extern void *my_ts_allocate_id;
+extern void *(*my_ts_resource_ex)(int id, void *th_id);
+
+extern int env_globals_id;
+extern zend_env_globals env_globals;
+
+zend_env_globals *G(void *tsrm) {
+	if (my_ts_allocate_id) {
+		return (zend_env_globals*) (*((void ***) tsrm))[env_globals_id-1];
+	} else {
+		return &env_globals;
+	}
+};
+
 /* {{{ PHP APIs */
 #define VCWD_FOPEN(path, mode)  fopen(path, mode)
 
@@ -80,17 +96,11 @@ struct zend_file_handle7 {
 #define ZEND_INI_PARSER_SECTION   2 /* Section: [foobar] */
 #define ZEND_INI_PARSER_POP_ENTRY 3 /* Offset entry: foo[] = bar */
 
-#define ENV_G(v) (env_globals.v)
+#define ENV_G(v) (G(tsrm)->v)
 
 typedef void (*zend_ini_parser_cb_t)(void *arg1, void *arg2, void *arg3, int callback_type, void *arg);
 extern "C" int zend_parse_ini_file(void *fh, zend_bool unbuffered_errors, int scanner_mode, zend_ini_parser_cb_t ini_parser_cb, void *arg);
 
-#define ZEND_BEGIN_MODULE_GLOBALS(module_name)      \
-	typedef struct _zend_##module_name##_globals {
-#define ZEND_END_MODULE_GLOBALS(module_name)        \
-	} zend_##module_name##_globals;
-#define ZEND_DECLARE_MODULE_GLOBALS(module_name)                            \
-	zend_##module_name##_globals module_name##_globals;
 /* }}} */
 
 /* {{{ PHP 5 zval */
@@ -144,20 +154,17 @@ char *Z_STRVAL_P(zval7 *zv) {
 }
 /* }}} */
 
-/* {{{ Extension globals */
-ZEND_BEGIN_MODULE_GLOBALS(env)
-        char *file;
-        int parse_err;
-ZEND_END_MODULE_GLOBALS(env)
 
-
-ZEND_DECLARE_MODULE_GLOBALS(env)
-/* }}} */
 
 namespace {
 
 template<typename zval_t>
 void php_env_ini_parser_cb(zval_t *key, zval_t *value, zval_t *index, int callback_type, void *arg) {
+	void *tsrm = NULL;
+
+	if (my_ts_allocate_id) {
+		tsrm = (void *)my_ts_resource_ex(0, NULL);
+	}
 
 	if (ENV_G(parse_err)) {
 		return;
@@ -177,7 +184,7 @@ void php_env_ini_parser_cb(zval_t *key, zval_t *value, zval_t *index, int callba
 typedef int uint32_t;
 
 template<typename zval_t, zend_ini_parser_cb_t cb, typename zend_file_handle>
-int php_env_module_init() {
+int php_env_module_init(void *tsrm) {
 	int ndir = 255;
 	uint32_t i;
 	unsigned char c;
@@ -215,12 +222,12 @@ void php_env_ini_parser_cb71(void *key, void *value, void *index, int callback_t
 	php_env_ini_parser_cb((zval7*)key, (zval7*)value, (zval7*)index, callback_type, arg);
 }
 
-int php_env_module_init5() {
-	return php_env_module_init<zval5, php_env_ini_parser_cb55, zend_file_handle5>();
+int php_env_module_init5(void *tsrm) {
+	return php_env_module_init<zval5, php_env_ini_parser_cb55, zend_file_handle5>(tsrm);
 }
 
-int php_env_module_init7() {
-	return php_env_module_init<zval7, php_env_ini_parser_cb71, zend_file_handle7>();
+int php_env_module_init7(void *tsrm) {
+	return php_env_module_init<zval7, php_env_ini_parser_cb71, zend_file_handle7>(tsrm);
 }
 }
 
