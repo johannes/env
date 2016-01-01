@@ -28,48 +28,86 @@
 #include "php_env.h"
 #include "env.h"
 
+static void* ini_entries = NULL;
+static int (*php_env_module_init)();
+
 ZEND_DECLARE_MODULE_GLOBALS(env)
 
-/* True global resources - no need for thread safety here */
-static int le_env;
+/* {{{ PHP 5 INI */
+struct php5_ini_entry {
+	int module_number;
+	int modifiable;
+	char *name;
+	unsigned int name_length;
+	void *on_modify;
+	void *mh_arg1;
+	void *mh_arg2;
+	void *mh_arg3;
 
-/* {{{ PHP_INI
- */
-PHP_INI_BEGIN()
-    STD_PHP_INI_ENTRY("env.file", "", PHP_INI_ALL, OnUpdateString, file, zend_env_globals, env_globals)
-PHP_INI_END()
+	char *value;
+	unsigned int value_length;
+
+	char *orig_value;
+	unsigned int orig_value_length;
+	int orig_modifiable;
+	int modified;
+
+	void (*displayer)(zend_ini_entry *ini_entry, int type);
+};
+static struct php5_ini_entry ini_entries5[] = {
+	{0, PHP_INI_ALL, "env.file", sizeof("env.file"), OnUpdateString, (void *) XtOffsetOf(zend_env_globals, file), (void *) &env_globals, NULL, NULL, 0, NULL, 0, 0, 0, NULL },
+	{0, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, NULL, 0, 0, 0, NULL}
+};
 /* }}} */
 
+/* {{{ PHP 7 INI */
+struct php7_ini_entry {
+	const char *name;
+	void *on_modify;
+	void *mh_arg1;
+	void *mh_arg2;
+	void *mh_arg3;
+	const char *value;
+	void (*displayer)(zend_ini_entry *ini_entry, int type);
+	int modifiable;
 
-/* {{{ php_env_init_globals
- */
-static void php_env_init_globals(zend_env_globals *env_globals)
+	unsigned int name_length;
+	unsigned int value_length;
+};
+static struct php7_ini_entry ini_entries7[] = {
+	{ "env.file", OnUpdateString, (void*)XtOffsetOf(zend_env_globals, file), (void*)&env_globals, NULL, NULL, NULL, PHP_INI_ALL, sizeof("env.file")-1, 0},
+	{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0}
+};
+/* }}} */
+
+static void php_env_init_globals(zend_env_globals *env_globals) /* {{{ */
 {
 	env_globals->file = NULL;
 	env_globals->parse_err = 0;
 }
-
 /* }}} */
-static void php_env_shutdown_globals(zend_env_globals *env_globals)
+
+static void php_env_shutdown_globals(zend_env_globals *env_globals) /* {{{ */
 {
 	env_globals->file = NULL;
 	env_globals->parse_err = 0;
 }
+/* }}} */
 
 /* {{{ PHP_MINIT_FUNCTION
  */
-PHP_MINIT_FUNCTION(env)
+int zm_startup_env(int type, int module_number)
 {
 	ZEND_INIT_MODULE_GLOBALS(env, php_env_init_globals, php_env_shutdown_globals);
-	REGISTER_INI_ENTRIES();
 
-	return php_env_module_init(TSRMLS_C);
+	zend_register_ini_entries((void *)ini_entries, module_number);
+	return php_env_module_init();
 }
 /* }}} */
 
 /* {{{ PHP_MSHUTDOWN_FUNCTION
  */
-PHP_MSHUTDOWN_FUNCTION(env)
+int zm_shutdown_env(int type, int module_number)
 {
 	UNREGISTER_INI_ENTRIES();
 
@@ -77,27 +115,10 @@ PHP_MSHUTDOWN_FUNCTION(env)
 }
 /* }}} */
 
-/* Remove if there's nothing to do at request start */
-/* {{{ PHP_RINIT_FUNCTION
- */
-PHP_RINIT_FUNCTION(env)
-{
-	return SUCCESS;
-}
-/* }}} */
-
-/* Remove if there's nothing to do at request end */
-/* {{{ PHP_RSHUTDOWN_FUNCTION
- */
-PHP_RSHUTDOWN_FUNCTION(env)
-{
-	return SUCCESS;
-}
-/* }}} */
 
 /* {{{ PHP_MINFO_FUNCTION
  */
-PHP_MINFO_FUNCTION(env)
+void zm_info_env(zend_module_entry *zend_module)
 {
 	php_info_print_table_start();
 	php_info_print_table_header(2, "env support", "enabled");
@@ -107,34 +128,72 @@ PHP_MINFO_FUNCTION(env)
 }
 /* }}} */
 
-/* {{{ env_functions[]
- *
- * Every user visible function must have an entry in env_functions[].
- */
-const zend_function_entry env_functions[] = {
-	PHP_FE_END	/* Must be the last line in env_functions[] */
-};
-/* }}} */
-
 /* {{{ env_module_entry
  */
 zend_module_entry env_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"env",
-	env_functions,
+	NULL,
 	PHP_MINIT(env),
 	PHP_MSHUTDOWN(env),
-	PHP_RINIT(env),		/* Replace with NULL if there's nothing to do at request start */
-	PHP_RSHUTDOWN(env),	/* Replace with NULL if there's nothing to do at request end */
+	NULL,
+	NULL,
 	PHP_MINFO(env),
 	PHP_ENV_VERSION,
 	STANDARD_MODULE_PROPERTIES
 };
 /* }}} */
 
-#ifdef COMPILE_DL_ENV
-ZEND_GET_MODULE(env)
+#if ZEND_DEBUG
+#define BUILD_DEBUG_STRING ",debug"
+#else
+#define BUILD_DEBUG_STRING
 #endif
+
+static char build_id[50];
+
+static int is_debug_build() {
+	void *self = dlopen(NULL, RTLD_NOW);
+	if (self) {
+		void *symbol = dlsym(self, "_zval_ptr_dtor_wrapper");
+		dlclose(self);
+		return symbol != NULL;
+	}
+	return 0;
+}
+
+static char* get_build_id(int api) {
+	snprintf(build_id, sizeof(build_id), "API%d,NTS%s", api, is_debug_build() ? ",debug" : "");
+	return build_id;
+}
+
+zend_module_entry *get_module(void) { /* {{{ */
+	const char *zend_version_string = zend_get_module_version("standard");
+
+	/* we could use version compare here .... */
+	if (zend_version_string && strstr(zend_version_string, "5.5.") == zend_version_string) {
+		env_module_entry.zend_api = 20121212;
+		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
+		ini_entries = ini_entries5;
+		php_env_module_init = php_env_module_init5;
+	} else if (zend_version_string && strstr(zend_version_string, "5.6.") == zend_version_string) {
+		env_module_entry.zend_api = 20131226;
+		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
+		ini_entries = ini_entries5;
+		php_env_module_init = php_env_module_init5;
+	} else if (zend_version_string && strstr(zend_version_string, "7.1.") == zend_version_string) {
+		env_module_entry.zend_api = 20151012;
+		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
+		ini_entries = ini_entries7;
+		php_env_module_init = php_env_module_init7;
+	} else {
+		env_module_entry.zend_api = 0;
+		env_module_entry.build_id = "UNSUPPOTED VERSION DETECTED";
+	}
+
+	return &env_module_entry;
+}
+/* }}} */
 
 /*
  * Local variables:
