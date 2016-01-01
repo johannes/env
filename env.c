@@ -181,8 +181,13 @@ zend_module_entry *get_module(void) { /* {{{ */
 		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
 		ini_entries = ini_entries5;
 		php_env_module_init = php_env_module_init5;
-	} else if (zend_version_string && strstr(zend_version_string, "7.1.") == zend_version_string) {
+	} else if (zend_version_string && strstr(zend_version_string, "7.0.") == zend_version_string) {
 		env_module_entry.zend_api = 20151012;
+		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
+		ini_entries = ini_entries7;
+		php_env_module_init = php_env_module_init7;
+	} else if (zend_version_string && strstr(zend_version_string, "7.1.") == zend_version_string) {
+		env_module_entry.zend_api = 20151012; // Not chaned since 7.0, yet?
 		env_module_entry.build_id = get_build_id(env_module_entry.zend_api);
 		ini_entries = ini_entries7;
 		php_env_module_init = php_env_module_init7;
